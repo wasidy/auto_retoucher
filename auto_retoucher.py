@@ -28,6 +28,7 @@ from scipy.ndimage import gaussian_filter
 
 MIN_WIDTH = 1024
 MIN_HEIGHT = 1024
+PREVIEW_SIZE = 1600 #Longest size of image
 
 
 def blending_mask(image, mask_size, side=''):
@@ -152,14 +153,44 @@ class AutoRetoucher:
     def preview_grid(self):
         pass
 
+    def resize(self, image, max_size=1600):
+        width, height = image.size[0:2]
+        ratio = min(max_size/width, max_size/height)
+        return image.resize(((int(width*ratio), int(height*ratio))))
+
+    def resize_source(self, image, new_size):
+        image = Image.fromarray(image)
+        width, height = image.size[0:2]
+        ratio = max(new_size/width, new_size/height)
+        image = image.resize(((int(width*ratio), int(height*ratio))))
+        print(f'New size W:{image.size[0]}, H:{image.size[1]}')
+        image = np.asanyarray(image, dtype=np.uint8)
+        self.source = image
+        return image
+
     def process(self):
         pass
-    def load_image(self, image):
-        self.source = image
-        if image.shape[0] < MIN_HEIGHT or image.shape[1] < MIN_WIDTH:
-            raise gr.Error(f'Too small image. Size should be at least {MIN_WIDTH}x{MIN_HEIGHT} pixels')
+
+    def rotate(self, angle):
+        if self.source is not None:
+            self.source=np.asarray(Image.fromarray(self.source).rotate(angle, expand=True),
+                                   dtype=np.uint8)
+        else:
             return None
-        return image
+        return self.resize(Image.fromarray(self.source))
+
+    def load_image(self, image):
+        if np.array_equal(self.source, image):
+            # Image already loaded
+            return image.shape[0:2]
+        else:
+            self.source = image
+            if image.shape[0] < MIN_HEIGHT or image.shape[1] < MIN_WIDTH:
+                gr.Warning(f'Too small image. Size should be at least {MIN_WIDTH}x{MIN_HEIGHT} pixels. Image not loaded')
+                return None
+        # Functions does not returns value because updating input image is event
+        return image.shape[0:2]
+        #return self.resize(Image.fromarray(image))
 
     def process_all(self, ):
         if self.mask is None:
@@ -168,54 +199,49 @@ class AutoRetoucher:
         if self.sprites_table is None:
             self.split_sprites()
         self.generate(strength, prompt, debug)
+        return None
 
     def generate_mask(self, image, mode='figure'):
         # mode 0: figure with Mask2Former
         # mode 1: whole image mask
-        print(mode, type(mode))
-        #self.source = image
+        #print(mode, type(mode))
+        # self.source = image
         self.mask = None # or np.zeroz??
-        gr.Info('Generating mask...')
+        
         if mode == 'figure':
             model = Mask2FormerForUniversalSegmentation.from_pretrained("facebook/mask2former-swin-base-coco-panoptic")
             processor = Mask2FormerImageProcessor.from_pretrained('facebook/mask2former-swin-small-coco-instance')
-            inputs = processor(image, return_tensors='pt')
+            inputs = processor(self.source, return_tensors='pt')
             with torch.no_grad():
                 outputs = model(**inputs)
             pred = processor.post_process_instance_segmentation(outputs,
-                                                                target_sizes=[[image.shape[0],
-                                                                               image.shape[1]]])[0]
+                                                                target_sizes=[[self.source.shape[0],
+                                                                               self.source.shape[1]]])[0]
             for key in pred['segments_info']:
                 if key['label_id']==0:
                     id_person = key['id']
 
-            self.mask = np.array([pred['segmentation'] == id_person], dtype=np.int8)[0,::]*255
+            self.mask = np.array([pred['segmentation'] == id_person], dtype=np.uint8)[0,::]*255
             del model
             del processor
         elif mode == 'fill':
-            self.mask = np.ones(image.shape[0:2])*255
+            self.mask = np.ones(self.source.shape[0:2], dtype=np.uint8)*255
             print(self.mask.shape)
 
-        preview_image = np.array(image/2+self.mask[...,np.newaxis]/2, dtype=np.uint8)
-        max_preview_size = 1024
-
-        #ratio = min(preview_image[0]/max_preview_size, preview_image[1]/max_preview_size)
-
+        # Generate transparent mask over image
+        preview_image = np.array(self.source/2+self.mask[...,np.newaxis]/2, dtype=np.uint8)
         preview_image = Image.fromarray(preview_image)
-        #.thumbnail(max_preview_size)
+        preview_mask = Image.fromarray(self.mask, mode='L')
 
-        return preview_image
+        return self.resize(preview_image), self.resize(preview_mask)
 
-    def compile_sprites(self):
-        pass
-    def split_sprites(self, source, mask, img_for_grid, min_overlap=64, sprite_size=768, min_density=5):
-        # This function split image to sprites with masked areas. 
-        #self.mask = mask[:,:,0]
-        #print(f'Mask shape{self.mask.shape}')
-        #self.source = source
-        #self.sprites_table = None
+
+    def generate_grid(self, img_for_grid, min_overlap, sprite_size, min_density):
+        # This function split image to sprites with masked areas.
+
         self.original_imgs=[]
-        gr.Info('Splitting mask...')
+
+        
         width = self.mask.shape[1]
         height = self.mask.shape[0]     # Неправильный код!!!! Неверно рассчитывается перекрытие
                                         # Добавить проверку кратности 8
@@ -223,18 +249,16 @@ class AutoRetoucher:
         sy = height // (sprite_size - min_overlap) + 1   # Num of Y sprites
         overlap_x = sprite_size - (width - sprite_size) // (sx - 1)
         overlap_y = sprite_size - (height - sprite_size) // (sy - 1)
-        print(overlap_x, overlap_y)
+
         #print(f'Overlap X:{overlap_x}, overlap Y:{overlap_y}, Sprites X:{sx}, Sprites Y:{sy}')
         step_width = sprite_size - overlap_x
         step_height = sprite_size - overlap_y
 
-        # Generate empty table of sprites
+        # Generate empty table of sprites. Table format is [(bool, (y,x))]
         sprites_table = []
         sprites_table = [[(False, (0,0))] * (sx+1) for i in range(sy+1)]
 
         sprites = []
-        # Adding sprites to list with density criterion
-        # LATER! Change list to np.array
 
         for y in range(sy):
             for x in range(sx):
@@ -252,21 +276,22 @@ class AutoRetoucher:
         self.sprites_table = sprites_table
         self.sprite_size = sprite_size
 
-        grid = Image.fromarray(img_for_grid, mode='RGB')
+        grid = Image.fromarray(self.source, mode='RGB')
         draw = ImageDraw.Draw(grid)
         for s in sprites:
             self.original_imgs.append(self.source[s[1]:s[1]+sprite_size, s[0]:s[0]+sprite_size,:])
-            draw.rectangle(s, width=10, outline='red')
+            draw.rectangle(s, width=int(width/200), outline='red')
 # При повторной генерации спрайтов предыдущие удалить! Реализовать клик по спрайту для повторной генерации
         print(type(sprites), len(sprites))
-        return grid
-    
+        return self.resize(grid)
+
+
     def get_sprites(self):
         sprites_tuple = []
         for n, s in enumerate(self.original_imgs):
             sprites_tuple.append((s,str(n)))
         return sprites_tuple
-    
+
     def safety_checker(self, images, clip_input):
         return images, [False]
 
@@ -286,7 +311,7 @@ class AutoRetoucher:
             self.pipe = self.pipe.to("cuda")
             self.pipe.enable_xformers_memory_efficient_attention()
         return
-    
+
     def get_current_generation(self):
         # Only for showing process
         print('Beep!')
@@ -296,11 +321,13 @@ class AutoRetoucher:
         # Generating a single image/batch
         self.load_sdxl_pipe()
         image = self.original_imgs[int(num_image)]
+        print(type(image))
+
         generated_image = np.array(self.pipe(prompt, image=Image.fromarray(image),
                                         strength=strength/100.0).images[0])
         return generated_image.astype(np.uint8)
 
-    def generate(self, strength, prompt, debug):
+    def generate(self, strength, prompt, debug=False):
         #
 
         if not debug:
@@ -310,11 +337,12 @@ class AutoRetoucher:
             #self.pipe.safety_checker=self.safety_checker
 
         self.generated_imgs = []
+        negative_prompt='tatoo'
         strength = strength/100.0
         for count, temp_img in enumerate(self.original_imgs):
             if not debug:
                 gr.Info(f'{count+1} of {len(self.original_imgs)+1} processed')
-                generated_image = np.array(self.pipe(prompt, image=Image.fromarray(temp_img),
+                generated_image = np.array(self.pipe(prompt=prompt, negative_prompt=negative_prompt, image=Image.fromarray(temp_img),
                                                 strength=strength).images[0])
                 self.current_generation = generated_image.copy()
             else:
@@ -362,7 +390,7 @@ class AutoRetoucher:
         processed_img = Image.fromarray(new_image, mode='RGB')
         final_img.paste(processed_img, (0, 0), alpha_channel)
 
-        return f'{count+1} sprites generated! {mask.shape, self.mask.shape, blurred_mask.shape, alpha_channel.size}', final_img, alpha_channel
+        return final_img
 
     def prepare_output(self):
         pass
@@ -379,45 +407,82 @@ class AutoRetoucher:
         return None, None, None
 
 retoucher = AutoRetoucher()
+css = '''
+footer {visibility: hidden}
+#generate {background-color: #DB8633; border-radius: 5px}
+#blue {background-color: #2F4985; border-radius: 5px}
+'''
 
-with gr.Blocks(theme='gradio/monochrome', css="footer {visibility: hidden}", title='Auto Retoucher SDXL') as demo:
+with gr.Blocks(theme='gradio/monochrome', css=css, title='Auto Retoucher SDXL') as demo:
+
+    '''
+    Input image, mask, and sliced srites saved in AutoRetoucher class for speed and memory
+    optimization, because Gradio works slow with high-resolution images.
+    Class sends back resized images, except generation output.
+    You can change size of preview image in global variable.
+    '''
     with gr.Row():
         # Input panel
         with gr.Column():
             # Images
             with gr.Tabs('Preprocess') as input_tabs:
+
                 with gr.TabItem('Input image', id=0):
                     input_image = gr.Image(sources='upload',
                                            show_download_button=False, container=False,
-                                           )
-                with gr.TabItem('Mask', id=1):
-                    mask_image = gr.Image(sources='upload', label='Mask',
+                                           label='test', show_label=True)
+                with gr.TabItem('Composite mask', id=1):
+                    mask_preview = gr.Image(sources='upload', label='Composite mask',
                                           show_download_button=False, container=False,
                                           show_label=False, interactive=False)
-                with gr.TabItem('Mask with grid', id=2):
+                with gr.TabItem('Mask'):
+                    mask = gr.Image(visible = True, sources='upload', label='Mask',
+                                          show_download_button=False, container=False,
+                                          show_label=False, interactive=False)
+                with gr.TabItem('Edit mask'):
+                    edit_mask = gr.ImageEditor(sources='upload', transforms=(),
+                                               eraser=gr.Eraser(default_size=20),
+                                               crop_size=None,
+                                               brush=gr.Brush(default_size=20,
+                                                              colors=["#FFFFFF"],
+                                                              color_mode="fixed"))
+                with gr.TabItem('Grid', id=2):
                     grid_image = gr.Image(sources='upload', label='Grid',
                                           show_download_button=False, container=False,
-                                          show_label=False)
+                                          show_label=False, interactive=False)
+                with gr.TabItem('Batch processing'):
+                    i = gr.File(file_count='multiple', file_types=['image'])
             with gr.Row():
-                #with gr.Column():
-                gen_mask = gr.Button('Make mask and grid', size='lg')
-                clear_all = gr.ClearButton()
-                #with gr.Column():
-                gen_sprites = gr.Button('Generate', variant='primary')
-                test_gen = gr.Button('Total test generate')
+                
+                generate = gr.Button('GENERATE BEAUTY', interactive=False, elem_id='generate')
+                
+                clear_all = gr.Button('CLEAR ALL', elem_id='clear')
                 #with gr.Column():
 
-            with gr.Accordion(label='Mask and grid settings', open=True):
+
+                #with gr.Column():
+
+            with gr.Accordion(label='Image and mask processing', open=True):
                 with gr.Row():
-                    with gr.Column():
-                        fill_mask = gr.Button('Fill')
-                    with gr.Column():
-                        expand_mask = gr.Button('Expand mask')
-                    with gr.Column():
-                        concate_mask = gr.Button('Concate mask')
-                    with gr.Column():
-                        edit_mask = gr.Button('Edit mask')
-
+                    
+                    
+                    rotate_left = gr.Button('◀ Rotate left', elem_id='blue')
+                    rotate_right = gr.Button('Rotate Right ▶', elem_id='blue')
+                    
+                with gr.Row():
+                    resize_image = gr.Button('Resize Image', elem_id='blue')
+                with gr.Row():
+                    resize_image_size = gr.Slider(minimum = 1024, maximum = 8192, value=2048,
+                                                  step=64, label='Shortest side',
+                                                  show_label=True, interactive=True)
+                    
+                    current_size = gr.Text(show_label=False, interactive=False)
+                    resize_batch = gr.Checkbox(label='Resize batch', value=False)
+                with gr.Row():
+                    fill_mask = gr.Button('Fill mask', elem_id='blue')
+    
+                    edit_mask = gr.Button('Edit mask', elem_id='blue', interactive=False)
+            with gr.Accordion(label='Grid processing'):
                     min_overlap = gr.Slider(minimum=32, maximum=256, value=64,
                                             step=8, label='Minimum overlap',
                                             show_label=True, interactive=True)
@@ -425,7 +490,7 @@ with gr.Blocks(theme='gradio/monochrome', css="footer {visibility: hidden}", tit
                     min_density = gr.Slider(minimum=0, maximum=100, value=5, step=1,
                                             label='Minumum density',
                                             show_label=True, interactive=True)
-                    sprite_size = gr.Slider(minimum=512, maximum=1536, value=768,
+                    sprite_size = gr.Slider(minimum=512, maximum=1536, value=1024,
                                             step=128, label='Sprite size',
                                             show_label=True, interactive=True)
                     mask_blur = gr.Slider(minimum=9, maximum=256, value=15, step=1,
@@ -434,14 +499,14 @@ with gr.Blocks(theme='gradio/monochrome', css="footer {visibility: hidden}", tit
                     mask_expand = gr.Slider(minimum=0, maximum=100, value=10,
                                             label='Mask expand', show_label=True,
                                             interactive=True)
-                    re_mesh = gr.Button('Remesh grid')
+                    remesh_grid = gr.Button('Remesh grid')
 
             with gr.Accordion(label='Generation settings', open=True):
-                strength = gr.Slider(minimum=0, maximum=100, value=15,
+                strength = gr.Slider(minimum=0, maximum=100, value=10,
                                      label='Denoise strength', show_label=True,
                                      interactive=True)
-                
-                
+
+
                 steps = gr.Slider(minimum=1, maximum=100, value=50, step=1,
                                   label='Steps', show_label=True, interactive=True)
                 batch_size = gr.Slider(minimum=1, maximum=16, value=1, step=1,
@@ -456,31 +521,36 @@ with gr.Blocks(theme='gradio/monochrome', css="footer {visibility: hidden}", tit
                         negative_prompt = gr.Textbox(label='Negative prompt')
 
             temp_image = gr.Image(visible=False)
-                
-        # Output panel    
+
+        # Output panel
         with gr.Column():
             with gr.Tabs('Output') as out_tabs:
                 with gr.TabItem('Output image', id=3):
                     out = gr.Image(show_label=False, interactive=False, show_download_button=True)
-                with gr.TabItem('Current generation', id=4):
-                    cur_gen = gr.Image(value=retoucher.get_current_generation,
-                                       show_label=False, interactive=False, every=None)
+
                 with gr.TabItem('Sprites', id=5):
                     sprites_gallery = gr.Gallery(columns=4, allow_preview=False)
                     get_sprites = gr.Button('Get sprites')
                     with gr.Accordion('Generation'):
                         sprite_test_num = gr.Text(label='Sprite for generation:', value='0', show_label='True')
-                        test_img = gr.Image()
-                        gen_once = gr.Button('Generate once')
+                        with gr.Tabs('Preview') as preview:
+                            with gr.TabItem('Before'):
+                                test_img = gr.Image(show_label=False, interactive=False)
+                            with gr.TabItem('After'):
+                                processed_test_img = gr.Image(show_label=False, interactive=False)
+                        gen_once = gr.Button('GENERATE ONCE', elem_id='generate', interactive=False)
                         gen_once.click(fn=retoucher.process_img2img,
                                        inputs=[sprite_test_num, strength, prompt],
-                                       outputs=[test_img])
+                                       outputs=[processed_test_img], concurrency_id='fn',
+                                       scroll_to_output=True)
+                with gr.TabItem('ReGen selected'):
+                    pass
 
             #gen_sprites = gr.Button('Generate')
             make_grid = gr.Button('Preview grid', visible=False)
             info_text = gr.Textbox(show_label=False, interactive=False)
-            mask = gr.Image(visible = False)
-    #input_image.clear(fn=lambda: gr.Button(interactive=False), outputs=[gen_mask])
+
+    
     # add visualization of process (tqdm)
     mask_mode = gr.State(value='figure') # 'figure', 'fill'
 
@@ -488,45 +558,129 @@ with gr.Blocks(theme='gradio/monochrome', css="footer {visibility: hidden}", tit
         #print(f'Ev selected:{ev.selected}\nEv data:{ev._data}\nEv Value:{ev.value}\nEv index:{ev.index}\nEv target:{ev.target}')
         #print(ev.value['image']['path'])
         return ev.index, ev.value['image']['path']
-
     sprites_gallery.select(fn=show_me, outputs=[sprite_test_num, test_img])
 
-    gen_mask.click(fn=retoucher.generate_mask,
-                   inputs=[input_image, mask_mode],
-                   outputs=[mask_image]).then(fn=retoucher.split_sprites,
-                                              inputs=[input_image, mask, mask_image,
-                                              min_overlap, sprite_size, min_density],
-                                              outputs=grid_image)
+    
 
-    make_grid.click(fn=retoucher.split_sprites, inputs=[input_image, mask, out, min_overlap, sprite_size, min_density], outputs=[out])
+    def rotate_left_fn():
+        image=retoucher.rotate(angle=90)
+        return image
+    rotate_left.click(fn=rotate_left_fn, outputs=[input_image], concurrency_id='fn')
 
-    gen_sprites.click(fn=retoucher.generate, inputs=[strength, prompt,debug_mode],
-                      outputs=[info_text, out, temp_image])
+    def rotate_right_fn():
+        image=retoucher.rotate(angle=270)
+        return image
+    rotate_right.click(fn=rotate_right_fn, outputs=[input_image], concurrency_id='fn')
 
+    def resize_image_fn(image, size):
+        if type(image) is np.ndarray:
+            image = retoucher.resize_source(image, size)
+            return image
+        return None
+    resize_image.click(fn=resize_image_fn, inputs=[input_image, resize_image_size],
+                       outputs=[input_image], concurrency_id='fn')
+    
+    #def remesh_grid_fn(mask_preview, min_overlap, sprite_size, min_density):
+    #    if type(mask_preview) is not np.ndarray:
+    #        return None
+    #    return retoucher.generate_grid(mask_preview, min_overlap, sprite_size, min_density)
+    
+    #remesh_grid.click(fn=remesh_grid_fn, inputs=[mask_preview, min_overlap, sprite_size, min_density],
+    #                  outputs=[grid_image], concurrency_id='fn')
+
+
+    '''
     fill_mask.click(fn=lambda: 'fill', outputs=[mask_mode]).\
         then(fn=retoucher.generate_mask, inputs=[input_image, mask_mode], outputs=[mask_image]).\
         then(fn=retoucher.split_sprites, inputs=[input_image, mask,
                                                   mask_image, min_overlap,
                                                   sprite_size, min_density],
                                           outputs=[grid_image])
-    
-    re_mesh.click(fn=lambda: gr.Image(visible=False), outputs=[cur_gen])                                                                                                #show_mask.click(fn=retoucher.show_mask, outputs=temp_image)
+    '''
+    #re_mesh.click(fn=lambda: gr.Image(visible=False), outputs=[cur_gen])                                                                                                #show_mask.click(fn=retoucher.show_mask, outputs=temp_image)
     #show_source.click(fn=retoucher.show_source, outputs=temp_image)
     # Imput image events
-    input_image.clear(fn=retoucher.clear,
-                      outputs=[input_image,
-                               mask_image,
-                               grid_image]).then(fn=lambda: gr.Tabs(selected=0),
-                                                 inputs=[],outputs=[input_tabs])
-    input_image.upload(fn=retoucher.load_image, inputs=[input_image], outputs=[input_image])
-
+ 
     # Autofocus on tabs
     get_sprites.click(fn=retoucher.get_sprites, outputs=[sprites_gallery])
-    mask_image.change(fn=lambda: gr.Tabs(selected=1), inputs=[], outputs=[input_tabs])
-    grid_image.change(fn=lambda: gr.Tabs(selected=2), inputs=[], outputs=[input_tabs])
+    #mask_image.change(fn=lambda: gr.Tabs(selected=1), inputs=[], outputs=[input_tabs])
+    #grid_image.change(fn=lambda: gr.Tabs(selected=2), inputs=[], outputs=[input_tabs])
 
-    #test_gen.click(fn=retoucher.process_all, inputs=[])
+
+    def grid_generate(mask_preview, min_overlap, sprite_size, min_density):
+        gr.Info('Generating grid')
+        return retoucher.generate_grid(mask_preview, min_overlap, sprite_size, min_density)
+
+    # Delete Mask_preview from sending to makegrid
+    def process_mask_and_grid(input_image, mask_preview, min_overlap, sprite_size, min_density):
+        input_image_size=(0,0)
+        if type(input_image) is not np.ndarray:
+            gr.Info('Mask cleared')
+            return None, None, None, gr.Text('Image not loaded'), gr.Button(interactive=False)
+        else:
+            input_image_size = retoucher.load_image(input_image)
+        
+        gr.Info('Generating mask')
+        mask_mode = 'figure'
+        mask_preview, mask = retoucher.generate_mask(input_image, mask_mode)
+        mask_preview = np.asanyarray(mask_preview, dtype=np.uint8)
+        grid_image=grid_generate(mask_preview, min_overlap, sprite_size, min_density)
+        #button_enable = gr.Button(interactive=True)
+        return mask_preview, mask, grid_image, gr.Text(input_image_size), gr.Button(interactive=True)
+
+    # Event for loading or clearing input image        
+    input_image.change(fn=process_mask_and_grid,
+                       inputs=[input_image, mask_preview, min_overlap, sprite_size, min_density],
+                       outputs=[mask_preview, mask, grid_image, current_size, generate], concurrency_id='fn')
+    
+    # Remesh grid
+    remesh_grid.click(fn=grid_generate, inputs=[mask_preview, min_overlap,
+                                                sprite_size, min_density],
+                      outputs=[grid_image], concurrency_id='fn')
+
+    # Auto generate mask, grid and output
+    def check_mask_and_grid(input_image, mask_preview, mask, grid_image, strength,
+                           prompt, negative_prompt,
+                           steps, batch_size, opacity,
+                           min_overlap, sprite_size, min_density):
+        
+        if type(input_image) is not np.ndarray:
+            gr.Warning('Image not loaded')
+            return None
+
+        if type(mask_preview) is not np.ndarray:
+            gr.Info('Creating mask and grid')
+            mask_mode = 'figure'
+            #mask_preview, mask = retoucher.generate_mask(input_image, mask_mode)
+            #mask_preview = np.asanyarray(mask_preview, dtype=np.uint8)
+            mask_preview, mask = mask_generate(input_image)
+        if type(grid_image) is not np.ndarray:
+            
+            grid_image = retoucher.generate_grid(mask_preview, min_overlap, sprite_size, min_density)
+        output = retoucher.generate(strength, prompt)
+
+        return output, mask_preview, mask, grid_image
+
+    def generate_fn(strength, prompt):
+        # disable generate button during generate
+        output = retoucher.generate(strength, prompt)
+        return output
+    
+    #add checking mask and grid
+    
+    generate.click(fn=generate_fn, inputs=[strength, prompt], outputs=[out], concurrency_id='fn')
+    
+    #test_gen.click(fn=auto_process_image,
+    #               inputs=[input_image, mask_preview, mask, grid_image, 
+    #                       strength, prompt, negative_prompt,
+    #                       steps, batch_size, opacity,
+    #                       min_overlap, sprite_size, min_density],
+    #               outputs=[out, mask_preview, mask, grid_image], concurrency_id='fn')
+
+    #gen_sprites.click(fn=retoucher.generate, inputs=[strength, prompt,debug_mode],
+    #                  outputs=[out])
+
 
 if __name__ == '__main__':
-    demo.queue(max_size=10)
+    demo.queue(default_concurrency_limit=1)
     demo.launch()
