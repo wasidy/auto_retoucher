@@ -19,7 +19,7 @@ AutoRetoucher creates a perfect result with the following steps:
 - compiling result tiles with blending and paste new image to original background with generated mask
 - after generation you can regenerate any part of image with custom prompt and paste it again
 - also batching is supported
-- the application is also suitable for retouching portraits, but I recommend to resize it smaller for best result
+- the application is also suitable for retouching close-up portraits, but I recommend to resize it smaller for best result
 - for the final you can load PNG file into Photoshop, as a new layer over original image, and apply mask for some areas
 
 ### Interface
@@ -34,5 +34,6 @@ AutoRetoucher creates a perfect result with the following steps:
 7. Output image. After generation you can save PNG file with clicking RMB.
 8. Regenerate custom tile. As source for regenerating you can click LMB on any area input OR output image. Tile will be loaded in window.
 9. <kbd>Tile masking</kbd> is value for box alpha. <kdb>Apply generated mask</kbd> means that the generation result will be applied only to the area on which the base mask was generated. <kbd>APPLY TO IMAGE</kbd> will paste generated tile to original coordinates onto output image, with blur settings. <kbd>Prompt</kbd> and <kbd>Negative prompt</kdb> is custom prompt for single tile generation.
+10. Added ability to automatic saving generated result, and saving outputs by button pressing. 
 ---
 #### Sample images are copyrighted by Vasiliy Stepanov.
