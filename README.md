@@ -4,8 +4,9 @@
 - Videocard with CUDA and minimum 12Gb VRAM
   
 ### Installation:
-- Copy files to folder and run `pip install -r requirements.txt` (venv recommended)
-- copy SDXL checkpoints to 'models' folder. 
+- copy files to folder and run `install.bat`
+- copy SDXL checkpoints to 'models' folder
+- launch `run.bat` and open 127.0.0.1:7860 in your browser 
 
 ### Usage
 This application is mainly used for retouching portraits with a lot of exposed body areas that require careful retouching, such as shootings in lingerie, swimsuits or explicit erotic.
