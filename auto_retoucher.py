@@ -171,7 +171,7 @@ class AutoRetoucher:
         if not isinstance(image, np.ndarray):
             return None
 
-        self.mask = np.zeros(image.shape[0:2], dtype=np.uint8)
+        self.mask = np.empty(image.shape[0:2], dtype=np.uint8)
         id_person = None
         if mode == 'figure':
             model = Mask2FormerForUniversalSegmentation.from_pretrained(MASK_MODEL)
@@ -179,14 +179,16 @@ class AutoRetoucher:
             inputs = processor(self.source, return_tensors='pt')
             with torch.no_grad():
                 outputs = model(**inputs)
-            pred = processor.post_process_panoptic_segmentation(outputs, label_ids_to_fuse=[0],
-                                                                target_sizes=[[self.source.shape[0],
-                                                                               self.source.shape[1]]])[0]
+            pred = processor.post_process_panoptic_segmentation(outputs,
+                                                                label_ids_to_fuse=[0],
+                                                                target_sizes=[self.source.shape[0:2]])[0]
             for key in pred['segments_info']:
                 if key['label_id'] == 0:
                     id_person = key['id']
             if id_person is not None:
-                self.mask = np.array([pred['segmentation'] == id_person], dtype=np.uint8)[0, ::]*255
+                temp_tensor_mask = np.array(pred['segmentation'], dtype=np.uint8)
+                self.mask = np.array([temp_tensor_mask == id_person], dtype=np.uint8)[0, ::]*255
+
             else:
                 gr.Warning('Figure not found. Use fill mask or another image')
             del model
@@ -264,7 +266,6 @@ class AutoRetoucher:
             self.original_imgs.append(image[s[1]:s[1]+tile_size, s[0]:s[0]+tile_size, :])
             # Drawing for preview purposes only
             draw.rectangle(s, width=int(width/200), outline='red')
-        print(f'Q of tiles:{len(tiles_coords)}')
         return self.resize(grid_preview)
 
     def get_tile_with_coords(self, image, tile_size, coordinates):
@@ -461,15 +462,15 @@ with gr.Blocks(theme=theme, css=css, title='Auto Retoucher SDXL') as demo:
                 with gr.TabItem('Input image', id=0):
                     input_image = gr.Image(sources='upload',
                                            show_download_button=False, container=False,
-                                           label='test', show_label=True)
+                                           label='test')
                 with gr.TabItem('Composite mask', id=1):
                     mask_preview_gr = gr.Image(sources='upload', label='Composite mask',
                                                show_download_button=False, container=False,
-                                               show_label=False, interactive=False)
+                                               interactive=False)
                 with gr.TabItem('Mask'):
                     mask_gr = gr.Image(visible=True, sources='upload', label='Mask',
                                        show_download_button=False, container=False,
-                                       show_label=False, interactive=False)
+                                       interactive=False)
                 '''
                 with gr.TabItem('Edit mask'):
                     edit_mask = gr.ImageEditor(sources='upload', transforms=(),
@@ -505,7 +506,7 @@ with gr.Blocks(theme=theme, css=css, title='Auto Retoucher SDXL') as demo:
                     stop_button = gr.Button('STOP', interactive=True, elem_id='stop')
                 with gr.Column():
                     reset_all_bt = gr.Button('RESET ALL PARAMETERS', elem_id='clear')
-            
+
             with gr.Row():
                 with gr.Column():
                     prompt_gr = gr.Textbox(label='Prompt',
@@ -516,7 +517,6 @@ with gr.Blocks(theme=theme, css=css, title='Auto Retoucher SDXL') as demo:
                     negative_prompt_gr = gr.Textbox(label='Negative prompt',
                                                     lines=2,
                                                     value=DEFAULT_NEGATIVE_PROMPT)
-
 
             with gr.Accordion(label='Image and mask processing', open=True):
                 with gr.Row():
@@ -581,7 +581,7 @@ with gr.Blocks(theme=theme, css=css, title='Auto Retoucher SDXL') as demo:
                         batch_size_gr = gr.Slider(minimum=1, maximum=16, value=DEFAULT_BATCH_SIZE,
                                                   step=1, label='Batch size', show_label=True,
                                                   interactive=True)
-                
+
                 with gr.Row():
                     checkpoints_list = retoucher.get_checkpoints_list()
                     checkpoints_dropdown = gr.Dropdown(choices=checkpoints_list,
@@ -704,10 +704,10 @@ with gr.Blocks(theme=theme, css=css, title='Auto Retoucher SDXL') as demo:
                        concurrency_id='fn')
 
     make_mask.click(fn=process_mask_and_grid,
-                       inputs=[input_image, mask_preview_gr, min_overlap_gr,
-                               tile_size_gr, min_density_gr, mask_blur_gr, mask_expand_gr],
-                       outputs=[mask_preview_gr, mask_gr, grid_image_gr, current_size_gr],
-                       concurrency_id='fn')
+                    inputs=[input_image, mask_preview_gr, min_overlap_gr,
+                            tile_size_gr, min_density_gr, mask_blur_gr, mask_expand_gr],
+                    outputs=[mask_preview_gr, mask_gr, grid_image_gr, current_size_gr],
+                    concurrency_id='fn')
 
     # Remesh grid
     remesh_grid.click(fn=grid_generate, inputs=[min_overlap_gr, tile_size_gr, min_density_gr],
