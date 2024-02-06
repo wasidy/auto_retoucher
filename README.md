@@ -17,5 +17,6 @@ AutoRetoucher creates a perfect result with the following steps:
 - compiling result tiles with blending and paste new image to original background with generated mask
 - after generation you can regenerate any part of image with custom prompt and paste it again
 - also batching is supported
+- the application is also suitable for retouching portraits, but I recommend to resize it smaller for best result
 
 ### Interface
