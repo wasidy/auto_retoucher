@@ -7,6 +7,7 @@ Created on Wed Jan 24 17:36:49 2024
 
 import gc
 import os
+from datetime import datetime
 import re
 from tkinter import Tk, filedialog
 import numpy as np
@@ -627,6 +628,18 @@ with gr.Blocks(theme=theme, css=css, title='Auto Retoucher SDXL') as demo:
                                     ct_negative_prompt = gr.Textbox(label='Negative prompt',
                                                                     lines=2,
                                                                     value=DEFAULT_NEGATIVE_PROMPT)
+                    with gr.Accordion('Saving options'):
+                        with gr.Row():
+                            with gr.Column():
+                                save_generation_gr = gr.Checkbox(label='Auto save outputs',
+                                                                 value=False, interactive=True)
+                                save_format_gr = gr.Radio(choices=['JPG', 'PNG'], value='JPG',
+                                                          show_label=False, interactive=True)
+                            with gr.Column():
+                                add_model_name_gr = gr.Checkbox(label='Add model name',
+                                                                value=False, interactive=True)
+                                save_current_out_gr = gr.Button('SAVE CURRENT OUTPUT',
+                                                                elem_id='blue')
 
     # Image processing -------------------------
     def rotate_left_fn():
@@ -714,18 +727,50 @@ with gr.Blocks(theme=theme, css=css, title='Auto Retoucher SDXL') as demo:
                       outputs=[grid_image_gr], concurrency_id='fn')
 
     # Generating image
-    def generate_fn(strength, prompt, negative_prompt, steps, batch_size):
+    def generate_fn(strength, prompt, negative_prompt, steps, batch_size, save_generation,
+                    save_format, add_model_name):
         ''' Generate image for sprites, compiling and paste to original background '''
         # disable generate button during generate
         output = retoucher.generate(strength, prompt, negative_prompt, steps, batch_size)
         if output is None:
             gr.Warning('Unable to generate')
+        if save_generation is True:
+            save_image_fn(output, save_format, add_model_name)
         return output
+
+    def save_image_fn(image, file_format, include_model_name):
+        ''' Save image with file name of current datetime and model's name '''
+
+        if image is None:
+            return None
+
+        c_time = re.sub('[:. -]', '', str(datetime.today()))
+
+        if include_model_name is True:
+            current_model = retoucher.current_checkpoint
+            model_name, model_ext = os.path.splitext(current_model)
+            model_name = model_name if len(model_name) < 12 else model_name[0:12]
+            model_name = '_' + model_name
+        else:
+            model_name = ''
+
+        f_name = OUTPUT_PATH + '/' + c_time + model_name + '.' + file_format.lower()
+        if isinstance(image, np.ndarray):
+            image = Image.fromarray(image, mode='RGB')
+
+        try:
+            image.save(f_name)
+            gr.Info(f'{f_name} saved!')
+        except gr.Error(f'Error writing {out_fname}'):
+            return None
 
     # add checking mask and grid
     generate.click(fn=generate_fn, inputs=[strength_gr, prompt_gr, negative_prompt_gr,
-                                           steps_gr, batch_size_gr],
+                                           steps_gr, batch_size_gr, save_generation_gr,
+                                           save_format_gr, add_model_name_gr],
                    outputs=[out], concurrency_id='fn')
+
+    save_current_out_gr.click(fn=save_image_fn, inputs=[out, save_format_gr, add_model_name_gr])
 
     def stop_fn():
         ''' Stopping generation by changing flag in AutoRetoucher class '''
