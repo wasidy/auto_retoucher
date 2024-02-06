@@ -15,7 +15,7 @@ AutoRetoucher creates a perfect result with the following steps:
 - splitting source image with mask to tiles size of 1024x1024 px (or you can select another value, but SDXL trained on this size)
 - generating new tiles with specified parameters of generation (denoise steps, and generation steps) and common prompt
 - compiling result tiles with blending and paste new image to original background with generated mask
-- after generation you can regenerate any part of image and paste it again
+- after generation you can regenerate any part of image with custom prompt and paste it again
 - also batching is supported
 
 ### Interface
