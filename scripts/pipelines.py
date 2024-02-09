@@ -91,7 +91,7 @@ class SDXLPipeLine():
         ''' SDXL checkpoint file for loading at start '''
         self.pipe: StableDiffusionXLImg2ImgPipeline = None
         self.checkpoint = checkpoint_file
-        self.stop_button_pressed = False
+        self.stop = False
 
         if self.checkpoint is not None:
             self.load_pipe(self.checkpoint)
@@ -145,8 +145,8 @@ class SDXLPipeLine():
             return None
 
         while next_elem:
-            if self.stop_button_pressed:
-                self.stop_button_pressed = False
+            if self.stop:
+                self.stop = False
                 return None
             batch_images = []
 
