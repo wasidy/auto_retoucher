@@ -1,9 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Fri Feb  9 20:18:08 2024
-
-@author: Pussy
-"""
 import socket
 import pickle
 import numpy as np
