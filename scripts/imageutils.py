@@ -1,14 +1,15 @@
 import numpy as np
 import cv2
+from scipy.ndimage import gaussian_filter1d
 from typing import List
 
 
-def split_mask_to_parts(image):
+def split_mask_to_blobs(image):
     ''' Input - labeled 2D array
         Output - list of 2D ndarrays with splitted masks, list of tuples with stats and centers '''
 
-    masks: List = None
-    coords: List = None
+    masks = []
+    coords = []
     blobs, labels, stats, centers = cv2.connectedComponentsWithStats(image)
 
     for i in range(1, blobs):
@@ -123,15 +124,17 @@ def image_rotate(image, angle):
 def image_blur(image, kernel):
     ''' Blur image with normalized box filter. Inputs: image (nparray), kernel '''
     ''' Perhaps, it is not necessary. '''
-    blurred_image = cv2.blur(image, (kernel, kernel))
-    return blurred_image
-
-def image_dilate(image, size):
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size))
-    image = cv2.dilate(image, kernel, iterations=1)
+    if kernel > 0:
+        image = cv2.blur(image, (kernel, kernel))
     return image
 
-def blurred_box(box_size, blur_size):
+def image_dilate(image, size):
+    if size > 0:
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size))
+        image = cv2.dilate(image, kernel, iterations=1)
+    return image
+
+def gradient_box(box_size, blur_size):
     ''' Creates box mask with blurred borders. Size is amout pixels from border to max value '''
     box = np.zeros((box_size, box_size), dtype=np.uint8)
     indent = blur_size // 2
@@ -183,14 +186,20 @@ def make_grid(image, mask, minimum_overlap, tile_size, minimum_density):
 
 
 def draw_grid(image, tile_coordinates):
-    ''' draw grid with different colors '''
-    grid = image.copy()
-    pad = image.shape[1]//300
+    ''' draw transparent grid with coordinates '''
+    grid = image.copy().astype(np.float32)
+    alpha = 0.25
+    beta = 0.75
+
     for t in tile_coordinates:
         x1, y1, x2, y2 = t
-        grid = cv2.rectangle(grid, (x1+pad, y1+pad), (x2-pad, y2-pad),
-                             (np.random.randint(0, 255), np.random.randint(0, 255),
-                              np.random.randint(0, 255)), pad)
+        red_box = np.zeros((y2-y1, x2-x1, 3), dtype=np.float32)
+        red_box[:, :, 0] = 255  # Filling red
+        grid[y1:y2, x1:x2, :] *= beta
+        red_box *= alpha
+        grid[y1:y2, x1:x2, :] = grid[y1:y2, x1:x2, :] + red_box
+
+    grid = grid.astype(np.uint8)
     return grid
 
 
@@ -202,23 +211,117 @@ def get_tiles_from_image(image, tiles_coordinates):
         tiles.append(image[y1:y2, x1:x2, :])
     return tiles
 
+def smooth_mask(image, smooth_size=10, expand=10):
+    ''' smooth and expand in percents of image size'''
+    img_size = max(image.shape[0:2])
+    expand = round(img_size/100*expand)
+    if expand > 0:
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (expand, expand))
+        image = cv2.dilate(image, kernel, iterations=1)
+    smooth_size = round(img_size/100*smooth_size)
+    if smooth_size > 0:
+        image = cv2.blur(image, (smooth_size, smooth_size))
+        _, image = cv2.threshold(image, 127, 255, cv2.THRESH_BINARY)
+    return image
 
 def get_custom_tile(image, tile_size, coordinates):
     ''' Returns square tile inside image with center coordinates.
         If coords outside borders, it will be corrected to be inside image'''
     x, y = coordinates
     height, width = image.shape[0:2]
+    
+   
     lx = int(x - tile_size/2)
     ly = int(y - tile_size/2)
+    
     lx = 0 if lx < 0 else lx
     ly = 0 if ly < 0 else ly
-    lx = width - tile_size if lx + tile_size > width else lx
-    ly = height - tile_size if ly + tile_size > height else ly
+    
+    lx = width - tile_size if (lx + tile_size) > width else lx
+    ly = height - tile_size if (ly + tile_size) > height else ly
     lx2 = lx+tile_size
     ly2 = ly+tile_size
     tile = image[ly:ly2, lx:lx2, :]
+    print(x, y, tile_size, lx, ly, lx2, ly2)
+    # В функции ошибка при равенстве размеров тайла и изображения по какой-либо из сторон
     return tile, lx, ly, lx2, ly2
 
+
+def blend_with_alpha(image, target, alpha):
+    alpha = alpha/255.0
+    beta = 1 - alpha
+    image = image/255.0 * beta[:,:,np.newaxis]
+    target = target/255.0 * alpha[:,:,np.newaxis]
+    
+    result = (image+target)*255
+    result = result.astype(np.uint8)
+    
+    return result
+    #result = cv2.addWeighted(image, alpha, target, beta, 0.0)
+
+
+def skin_mask_generate(image, face_img, face_mask,
+                       hue_threshold=1, sat_threshold=2, val_threshold=2,
+                       kernel_size=20, sigma=7, blur=5):
+    ''' Shift tone shifting H value for centering skin tones
+        Inputs:
+            image: numpy RGB image
+            face: cropped face
+            face_mask: mask of face
+        Returns binary mask '''
+
+    # Convert to HSV and shift hue
+    image = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
+    image[:, :, 0] = (image[:, :, 0] + 90) % 180
+    face_img = cv2.cvtColor(face_img, cv2.COLOR_RGB2HSV)
+    face_img[:, :, 0] = (face_img[:, :, 0] + 90) % 180
+
+    # Building histogram and smooth it
+    hue_hist = cv2.calcHist([face_img], [0], face_mask, [179], [0, 180])
+    hue_hist = hue_hist * (100 / hue_hist.max())
+    hue_hist = hue_hist.squeeze()
+    hue_hist = gaussian_filter1d(hue_hist, 1)
+
+    sat_hist = cv2.calcHist([face_img], [1], face_mask, [255], [0, 255])
+    sat_hist = sat_hist * (100 / sat_hist.max())
+    sat_hist = sat_hist.squeeze()
+    sat_hist = gaussian_filter1d(sat_hist, 1)
+
+    val_hist = cv2.calcHist([face_img], [2], face_mask, [255], [0, 255])
+    val_hist = val_hist * (100 / val_hist.max())
+    val_hist = val_hist.squeeze()
+    val_hist = gaussian_filter1d(val_hist, 1)
+
+    # Find low and high values on histogram
+    h_min = np.argmax(hue_hist > hue_threshold)
+    h_max = hue_hist.shape[0] - np.argmax(hue_hist[::-1] > hue_threshold)
+
+    s_min = np.argmax(sat_hist > sat_threshold)
+    s_max = sat_hist.shape[0] - np.argmax(sat_hist[::-1] > sat_threshold)
+
+    v_min = np.argmax(val_hist > val_threshold)
+    v_max = val_hist.shape[0] - np.argmax(val_hist[::-1] > sat_threshold)
+
+    # Creating color range
+    color1 = np.asarray([h_min, s_min, v_min])
+    color2 = np.asarray([h_max, s_max, v_max])
+    
+    image = cv2.medianBlur(image, blur)
+    mask = cv2.inRange(image, color1, color2)*255
+    
+    
+    #kernel_size = 4
+    #sigma = 3
+    #kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+    #mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    #print(mask.max())
+    #mask = cv2.GaussianBlur(mask, (sigma, sigma), 0)
+    #_, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
+    return mask
+
+def combine_masks(*masks):
+    
+    pass
 
 if __name__ == '__main__':
     from PIL import Image
